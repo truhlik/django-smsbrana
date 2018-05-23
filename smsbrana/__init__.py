@@ -6,8 +6,9 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 import urllib
+import urllib.parse
 import hashlib
-from django.utils.encoding import force_unicode, smart_str
+from django.utils.encoding import force_text, smart_str
 from smsbrana import const, signals
 import requests
 import xml.etree.ElementTree as ET
@@ -15,9 +16,12 @@ from smsbrana.const import DATETIME_FORMAT
 
 logger = logging.getLogger(__name__)
 
+
 class SmsConnectException(Exception): pass
 
+
 debug = False
+
 
 def require_settings(name):
     try:
@@ -25,11 +29,13 @@ def require_settings(name):
     except AttributeError:
         raise ImproperlyConfigured("SMS CONNECT: You must set the '%s' in settings file." % name)
 
+
 require_settings('SMS_CONNECT_LOGIN')
 require_settings('SMS_CONNECT_PASSWORD')
 
 SECURE = getattr(settings, 'SMS_CONNECT_SECURE', True)
 SENDER_ID = getattr(settings, 'SMS_CONNECT_SENDER_ID', None)
+
 
 def parse_simple_response_xml_to_dict(xml):
     tree = ET.XML(xml)
@@ -66,11 +72,14 @@ class SmsConnect(object):
         values = {'login': self.login}
         if self.secure:
             values = dict(values, time=(time or datetime.now()).strftime(DATETIME_FORMAT), sul=sul or uuid.uuid4().hex)
-            values['auth'] = hashlib.md5('%s%s%s' % (self.password, values['time'], values['sul'])).hexdigest()
+            p = self.password.encode('utf-8')
+            t = values['time'].encode('utf-8')
+            s = values['sul'].encode('utf-8')
+            values['auth'] = hashlib.md5(b'%s%s%s' % (p, t, s)).hexdigest()
         else:
             values = dict(values, password=self.password)
 
-        return urllib.urlencode(values)
+        return urllib.parse.urlencode(values)
 
     def _construct_url(self, name, **kwargs):
         if debug:
@@ -78,16 +87,16 @@ class SmsConnect(object):
         values = {'action': name}
         for k, v in kwargs.items():
             if v:
-                values[k] = smart_str(force_unicode(v))
+                values[k] = smart_str(force_text(v)).encode('utf-8')
 
-        url = u'%s?%s&%s' % (const.API_ACCES_POINT, self._auth_url_part(), urllib.urlencode(values))
+        url = u'%s?%s&%s' % (const.API_ACCES_POINT, self._auth_url_part(), urllib.parse.urlencode(values))
         if debug:
             logger.debug('construct url kwargs %s', url)
         return url
 
     def _call_api(self, action, params={}, parse_function=parse_simple_response_xml_to_dict, check_err=True,
                   attempts=5):
-        for i in range(1, attempts): #if salt is used twice, make another few attempts #TODO ugly
+        for i in range(1, attempts):  # if salt is used twice, make another few attempts #TODO ugly
             url = self._construct_url(action, **params)
             response = requests.get(url)
 
@@ -97,7 +106,7 @@ class SmsConnect(object):
             #        print result
 
             if check_err and result['err'] != '0':
-                if result['err'] == '7' and i < attempts - 1: #if salt is used twice, do it again
+                if result['err'] == '7' and i < attempts - 1:  # if salt is used twice, do it again
                     logger.warning('%s , attempt %s' % (const.ERROR_CODES[result['err']], i))
                     continue
                 raise SmsConnectException(u'Error %s - %s' % (result['err'], const.ERROR_CODES[result['err']]))
@@ -108,8 +117,8 @@ class SmsConnect(object):
         Returns dict containing this keys - 'err','price','sms_count','credit','sms_id'
         """
         result = self._call_api('send_sms',
-            params=dict(number=number, message=message, when=when, delivery_report=delivery_report,
-                sender_id=sender_id))
+                                params=dict(number=number, message=message, when=when, delivery_report=delivery_report,
+                                            sender_id=sender_id))
         signals.smsconnect_sms_sent.send(sender=self, phone_number=number, text=message, result=result)
         return result
 
@@ -118,7 +127,7 @@ class SmsConnect(object):
         Returns dict with keys 'delivery_sms' and 'delivery_report' which contains lists of items dicts.
         """
         result = self._call_api('inbox', params=dict(delete=delete), check_err=False,
-            parse_function=parse_inbox_xml_to_dict)
+                                parse_function=parse_inbox_xml_to_dict)
         return result
 
     def credit_info(self):
